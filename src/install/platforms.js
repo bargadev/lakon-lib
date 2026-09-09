@@ -79,17 +79,27 @@ const PLATFORMS = [
       const hookResult = installHook(home);
       const cmds = installCommands(home);
       const mcp = wrapMcp(home);
+      // Deferred, not dropped: the SessionEnd hook (or the next lakonai command
+      // run outside a session) applies it, so the user has nothing to remember.
+      /* istanbul ignore next */
+      if (mcp.skipped && mcp.reason && !mcp.reason.startsWith('LAKON_NO_MCP')) {
+        try { require('./pending').enqueue('mcp-wrap'); } catch { /* best-effort */ }
+      }
       /* istanbul ignore next */
       const suffixHook = hookResult.settingsMerged ? '+ PreToolUse hook' : `(hook: ${hookResult.note})`;
+      /* istanbul ignore next */
+      const suffixPruned = hookResult.pruned && hookResult.pruned.length
+        ? `+ pruned ${hookResult.pruned.length} stale hook${hookResult.pruned.length > 1 ? 's' : ''}`
+        : '';
       /* istanbul ignore next */
       const suffixCmds = cmds.length ? `+ ${cmds.length} slash command${cmds.length > 1 ? 's' : ''}` : '';
       // Never silent: writing ~/.claude.json under a live session can orphan it,
       // so say that MCP compression was deferred and how to apply it later.
       /* istanbul ignore next */
       const suffixMcp = mcp.skipped && mcp.reason && !mcp.reason.startsWith('LAKON_NO_MCP')
-        ? `(MCP compression deferred - ${mcp.reason}; run \`lakonai mcp wrap\` after quitting Claude Code)`
+        ? `(MCP compression queued - ${mcp.reason}; applied automatically when the session ends)`
         : '';
-      return [rulePath, suffixHook, suffixCmds, suffixMcp].filter(Boolean).join(' ');
+      return [rulePath, suffixHook, suffixPruned, suffixCmds, suffixMcp].filter(Boolean).join(' ');
     },
     uninstall: ({ home }) => {
       uninstallHook(home);

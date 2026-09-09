@@ -65,18 +65,121 @@ async function status() {
   };
 }
 
+// The release that taught the server to retire gracefully (SIGUSR2). Sending it
+// to anything older would just kill the process — Node's default disposition for
+// SIGUSR2 is to terminate — which is exactly what retirement exists to avoid.
+const RETIRE_SINCE = [1, 2, 6];
+
+function supportsRetire(version) {
+  if (!version) return false; // pre-1.2.3 daemons stamped nothing
+  const parts = String(version).split('.').map((n) => parseInt(n, 10));
+  if (parts.length < 3 || parts.some(Number.isNaN)) return false;
+  for (let i = 0; i < 3; i++) {
+    if (parts[i] > RETIRE_SINCE[i]) return true;
+    if (parts[i] < RETIRE_SINCE[i]) return false;
+  }
+  return true;
+}
+
+// Does anything still hold a connection to this port? Used before killing a
+// daemon too old to retire on its own: a live connection means a session is
+// mid-request, and killing it produces the ECONNREFUSED this whole subsystem
+// exists to prevent. Unknown (no lsof) counts as "yes" — the cautious answer.
+function hasLiveConnections(port) {
+  try {
+    const out = spawnSync('lsof', ['-nP', `-iTCP:${port}`, '-sTCP:ESTABLISHED'], { encoding: 'utf8' });
+    if (out.error || typeof out.stdout !== 'string') return true;
+    return out.stdout.trim().split('\n').filter((l) => l && !l.startsWith('COMMAND')).length > 0;
+  } catch {
+    /* istanbul ignore next -- lsof missing: assume a connection rather than kill */
+    return true;
+  }
+}
+
+// Replace a daemon without dropping anyone's in-flight requests.
+//   'exited'       — retired gracefully and is already gone
+//   'draining'     — stopped listening, still serving open connections
+//   'left-running' — too old to retire and still in use; reaped later
+//   'stopped'      — too old to retire, nothing connected, terminated
+//   'gone'         — was not running
+async function retire(s) {
+  if (!s || !isRunning(s.pid)) return 'gone';
+
+  if (supportsRetire(s.version)) {
+    try { process.kill(s.pid, 'SIGUSR2'); } catch { return 'gone'; }
+    // It stops listening immediately, so the port frees up for the new daemon
+    // while the old connections finish on the old process.
+    await waitForPort(s.port, { timeoutMs: STOP_TIMEOUT_MS, want: false });
+    return isRunning(s.pid) ? 'draining' : 'exited';
+  }
+
+  if (hasLiveConnections(s.port)) {
+    rememberRetired(s);
+    return 'left-running';
+  }
+  try { process.kill(s.pid, 'SIGTERM'); } catch { /* already gone */ }
+  await waitForPort(s.port, { timeoutMs: STOP_TIMEOUT_MS, want: false });
+  return 'stopped';
+}
+
+// Old daemons we could not stop safely, remembered so a later run can finish the
+// job once they are idle.
+function retiredFile() {
+  return path.join(state.lakonHome(), 'proxy-retired.json');
+}
+
+function rememberRetired(s) {
+  try {
+    const list = readRetired().filter((r) => r.pid !== s.pid);
+    list.push({ pid: s.pid, port: s.port });
+    fs.mkdirSync(state.lakonHome(), { recursive: true });
+    fs.writeFileSync(retiredFile(), JSON.stringify(list));
+  } catch { /* best-effort */ }
+}
+
+function readRetired() {
+  try {
+    const list = JSON.parse(fs.readFileSync(retiredFile(), 'utf8'));
+    return Array.isArray(list) ? list.filter((r) => r && r.pid && r.port) : [];
+  } catch {
+    return [];
+  }
+}
+
+// Kill off retired daemons that have finally gone idle. Cheap, silent, and run
+// on every start so the leftovers do not accumulate.
+function reapRetired() {
+  const reaped = [];
+  const kept = [];
+  for (const r of readRetired()) {
+    if (!isRunning(r.pid)) { reaped.push(r.pid); continue; }
+    if (hasLiveConnections(r.port)) { kept.push(r); continue; }
+    try { process.kill(r.pid, 'SIGTERM'); reaped.push(r.pid); } catch { /* gone */ }
+  }
+  try {
+    if (kept.length) fs.writeFileSync(retiredFile(), JSON.stringify(kept));
+    else fs.unlinkSync(retiredFile());
+  } catch { /* best-effort */ }
+  return { reaped, kept: kept.map((r) => r.pid) };
+}
+
 // Start the daemon and wait until it actually serves. Returns
 // `{running: false, error}` when it does not — callers must check before
 // touching the user's shell rc.
 async function start({ allowRestart = true } = {}) {
+  reapRetired();
   const current = await status();
   if (current.running) {
     // A live daemon keeps executing the server.js it was started with, so after
     // an upgrade the running process is stale code — and a pre-1.2.3 daemon is
     // still the one that made the CLI fail. Replace it instead of adopting it.
     if (allowRestart && current.version !== VERSION) {
-      await stop();
-      return start({ allowRestart: false });
+      // Retire, do not kill: an upgrade run from inside a Claude Code session
+      // would otherwise drop that session's own connection to the proxy.
+      const how = await retire({ pid: current.pid, port: current.port, version: current.version });
+      clearState();
+      const next = await start({ allowRestart: false });
+      return { ...next, replaced: how };
     }
     // The env script is what the shell actually reads; an upgrade that adopts a
     // running daemon must still publish it, or the rc points at a missing file.
@@ -84,9 +187,13 @@ async function start({ allowRestart = true } = {}) {
     return { running: true, pid: current.pid, port: current.port, alreadyRunning: true };
   }
 
-  clearState(); // drop stale pid/port so we don't read the dead daemon's values
-
+  // Read the port BEFORE clearing: a session launched against the dead daemon
+  // has its ANTHROPIC_BASE_URL pinned to that port for its whole life, and it
+  // cannot be told to look elsewhere. Rebinding the same port is the only thing
+  // that brings those sessions back; clearing first would send us to the
+  // default and strand every one of them on ECONNREFUSED.
   const port = preferredPort();
+  clearState(); // drop stale pid/port so we don't read the dead daemon's values
   const child = spawn(process.execPath, [serverScript], {
     detached: true,
     stdio: 'ignore',
@@ -224,10 +331,82 @@ async function unwire() {
   return { touched, stopped };
 }
 
+// Read one environment variable out of another process. A process's env is
+// fixed at exec time, so this reports what the process was actually launched
+// with — not what the current shell would give it.
+function processEnv(pid, key) {
+  // Linux: the kernel exposes it directly, NUL-separated. Exactly one of these
+  // two branches is dead on any given platform, so neither can be covered on
+  // both — the test suite exercises whichever one this machine actually uses.
+  /* istanbul ignore next -- platform branch */
+  try {
+    const raw = fs.readFileSync(`/proc/${pid}/environ`, 'utf8');
+    for (const kv of raw.split('\0')) {
+      if (kv.startsWith(`${key}=`)) return kv.slice(key.length + 1);
+    }
+    return null;
+  } catch { /* not Linux, or the process is gone */ }
+
+  // macOS: `ps e` appends the environment after the command line.
+  try {
+    const out = spawnSync('ps', ['eww', '-p', String(pid), '-o', 'command='], { encoding: 'utf8' });
+    if (out.error || typeof out.stdout !== 'string') return null;
+    const m = out.stdout.match(new RegExp(`(?:^|\\s)${key}=(\\S*)`));
+    return m ? m[1] : null;
+  } catch {
+    /* istanbul ignore next -- no ps: we simply cannot tell */
+    return null;
+  }
+}
+
+// Claude Code sessions pinned to a given local proxy port.
+//
+// A session reads ANTHROPIC_BASE_URL once, at launch, and keeps it for life.
+// Nothing can re-point a process that is already running — not a hook, not a
+// fresh env script, not a proxy that came back on a different port. So when the
+// port they hold is dead, these sessions are not quietly falling back to direct
+// API access: each retries a refused connection until the user quits it.
+//
+// The caller decides what the port's state means; this only answers "who is
+// holding it". Best-effort by construction: an empty list means "none found",
+// never a guarantee that none exist.
+function sessionsOnPort(port) {
+  if (!port) return [];
+
+  let pids = [];
+  try {
+    const out = spawnSync('pgrep', ['-f', 'claude'], { encoding: 'utf8' });
+    if (typeof out.stdout !== 'string') return [];
+    pids = out.stdout.split('\n').map((l) => parseInt(l.trim(), 10)).filter(Boolean);
+  } catch {
+    /* istanbul ignore next -- no pgrep: we simply cannot tell */
+    return [];
+  }
+
+  const found = [];
+  for (const pid of pids) {
+    if (pid === process.pid) continue;
+    const url = processEnv(pid, 'ANTHROPIC_BASE_URL');
+    if (!url) continue;
+    // A remote gateway is the user's own routing decision, not ours to report.
+    const m = url.match(/^http:\/\/(?:127\.0\.0\.1|localhost|\[::1\]):(\d+)\/?$/);
+    if (!m || Number(m[1]) !== Number(port)) continue;
+    found.push({ pid, port: Number(port), url });
+  }
+  return found;
+}
+
 module.exports = {
   start,
+  sessionsOnPort,
+  processEnv,
   VERSION,
   ownsProxy,
+  retire,
+  reapRetired,
+  readRetired,
+  supportsRetire,
+  hasLiveConnections,
   stop,
   restart,
   status,

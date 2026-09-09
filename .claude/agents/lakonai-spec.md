@@ -245,6 +245,14 @@ reason it is not a SessionStart auto-rewrite.
   logging there.
 - `session-start.js` — update notice. `stop-hook.js` — records session usage AND
   runs the learner. `throttle.js` — rate-limits notices.
+- `session-end.js` — **SessionEnd**; drains the deferred-work queue
+  (`src/install/pending.js`). Registered with `async: true` because SessionEnd
+  hooks share a 1.5s budget and async ones are not timed out. It exists because
+  wrapping MCP servers rewrites `~/.claude.json`, which is unsafe while a session
+  is live — so `install` queues that work and this hook applies it once the
+  session is over. `bin/lakonai.js` also drains opportunistically at the start of
+  any command run outside a session, so a machine whose sessions never end
+  cleanly still converges.
 - Hook entry points guard runtime with `if (require.main === module)` so they can
   be `require()`d in tests; the I/O shell (`main`/`readStdin`) is
   `/* istanbul ignore next */`.
@@ -253,6 +261,37 @@ reason it is not a SessionStart auto-rewrite.
   `~/.claude/hooks/`, so a hook's relative requires (`../filters`, `../learn`)
   resolve inside the package. Never go back to flat-copying hooks that require the
   shared graph — it breaks at runtime.
+
+## Proxy lifecycle — three rules that are easy to break
+
+The proxy sits between Claude Code and the API via `ANTHROPIC_BASE_URL`. That
+one fact drives everything here, because **a process reads that variable once,
+at exec time, and holds it for life**. Nothing can re-point a running session —
+not a hook, not a regenerated `~/.lakon/proxy-env.sh`, not a proxy that comes
+back on a different port.
+
+1. **Never report the proxy as up without a real TCP connect.** `status()` checks
+   pid *and* port. The original version trusted `spawn()`, so a daemon that died
+   on EADDRINUSE still got `ANTHROPIC_BASE_URL` written into three shell rc
+   files and every later `claude` failed with ECONNREFUSED.
+2. **A restart must reclaim the port the dead daemon held.** `start()` reads
+   `preferredPort()` *before* `clearState()`. Reversing those two lines sends the
+   replacement to `DEFAULT_PORT` (41474) and strands every session pinned to the
+   old port on ECONNREFUSED for the rest of its life. There is a regression test
+   for exactly this ordering (`tests/proxy-lifecycle.test.js`).
+3. **Replace a daemon by retiring it, never by killing it.** An upgrade run from
+   inside a Claude Code session would otherwise drop that session's own
+   connection. `retire()` sends SIGUSR2 to a daemon new enough to understand it
+   (`RETIRE_SINCE` = 1.2.6; older ones would just die, since Node's default
+   disposition for SIGUSR2 is terminate). A daemon too old to retire is left
+   running if anything is still connected, recorded in `proxy-retired.json`, and
+   reaped by `reapRetired()` on a later start once it is idle.
+
+`sessionsOnPort(port)` reads other processes' `ANTHROPIC_BASE_URL` (via
+`/proc/<pid>/environ` on Linux, `ps eww` on macOS) to find sessions holding a
+port. `proxy status` uses it so a dead daemon does not get reported as the
+harmless "Claude talks to the API directly" — that is true only for sessions
+started afterwards, never for one already pinned to the dead port.
 
 ## Installer (`src/install/`)
 
@@ -360,6 +399,10 @@ src/proxy/server.js         HTTP proxy to api.anthropic.com; compresses request 
 src/proxy/state.js          proxy state on disk (~/.lakon/proxy.json), TCP probe
                             (probePort/waitForPort), and the guarded shell snippet
 src/proxy/daemon.js         supervisor: start/stop/restart/status/unwire + rc wiring
+                            retire()/reapRetired(): graceful daemon replacement
+                            sessionsOnPort(): who holds a given local port
+src/install/pending.js      deferred-work queue (drained on SessionEnd)
+src/hooks/session-end.js    SessionEnd hook: drains that queue
 src/proxy/compress/*.js     per-content-type body compressors
 src/proxy/detect.js         classify a text block (diff/json/log/code/text/short)
 src/hooks/*.js              Claude Code hooks
