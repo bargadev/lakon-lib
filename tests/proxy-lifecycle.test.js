@@ -376,3 +376,44 @@ test('the snippet clears a dead lakonai URL inherited from the environment', asy
     await cleanup(home, null);
   }
 });
+
+// Regression: a dead daemon's port must survive the restart.
+//
+// `start()` used to call `clearState()` before reading the preferred port, so a
+// daemon that had died on a non-default port was replaced by one on the default.
+// Any `claude` session already running had ANTHROPIC_BASE_URL pinned to the old
+// port for its whole life — nothing can re-point it — so it stayed on
+// ECONNREFUSED forever even though a healthy proxy was up on another port.
+test('restart rebinds the dead daemon port, not the default', async () => {
+  const home = freshHome();
+  const { daemon, state } = load(home);
+  try {
+    // A daemon that once bound this port and is now gone. pid 1 is alive but is
+    // not listening, which is exactly the "stale state" shape status() reports.
+    const spot = await occupy();
+    const deadPort = spot.port;
+    await spot.close();
+
+    fs.mkdirSync(home, { recursive: true });
+    fs.writeFileSync(
+      path.join(home, 'proxy.json'),
+      JSON.stringify({ pid: 1, port: deadPort, startedAt: new Date().toISOString() })
+    );
+
+    const before = await daemon.status();
+    assert.equal(before.running, false, 'the recorded daemon is dead');
+    assert.equal(before.stale, true);
+
+    const started = await daemon.start();
+    assert.equal(started.running, true, `expected a restart: ${started.error || ''}`);
+    assert.equal(started.port, deadPort,
+      'the restarted daemon must reclaim the port sessions are pinned to');
+    assert.notEqual(started.port, state.DEFAULT_PORT,
+      'guard: the test port must differ from the default, or it proves nothing');
+
+    await daemon.stop();
+  } finally {
+    cleanupEnv();
+    await cleanup(home, null);
+  }
+});

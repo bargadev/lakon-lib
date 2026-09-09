@@ -6,6 +6,43 @@ this file (no git tags). Format loosely follows
 
 ## [Unreleased]
 
+## [1.2.6] - 2026-09-09
+
+### Fixed
+- **A restart moved the proxy to a different port and stranded every running
+  session.** `start()` cleared the stale state *before* reading the port to bind,
+  so a daemon that had died on port 7474 was replaced by one on the default
+  (41474). That matters because a Claude Code process reads
+  `ANTHROPIC_BASE_URL` once, at launch, and holds it for life — nothing can
+  re-point it. So every session started against the old port kept retrying a
+  refused connection until the user quit it, even though a healthy proxy was up
+  the whole time. The port is now read before the state is cleared, and a
+  restart reclaims it.
+- **`proxy status` reported a dead proxy as "nothing broken".** That is true
+  only for sessions started afterwards. `proxy status` now looks for sessions
+  still pinned to the dead port, names their pids, and says they are failing
+  with ConnectionRefused and that `lakonai proxy start` recovers them.
+- **Upgrading from inside Claude Code could drop your own session.** Replacing
+  the proxy killed the running daemon — the one serving the session doing the
+  upgrading. The daemon now retires gracefully instead (SIGUSR2: stop listening,
+  finish the connections already open). A daemon too old to understand that
+  signal is left alive while anything is still connected, remembered in
+  `~/.lakon/proxy-retired.json`, and reaped on a later start once it is idle.
+- **Stale hook launchers from older versions crashed on every event.** When a
+  hook was removed from the package, its generated launcher and its
+  `settings.json` entry stayed behind. `install` owns the `lakon-` namespace, so
+  it now prunes launchers and entries it no longer ships, and reports how many.
+
+### Added
+- **Deferred work is applied automatically instead of asking you to remember a
+  command.** `lakonai install` cannot wrap MCP servers while a session is live
+  (that means rewriting `~/.claude.json` under the session still using it), so
+  it queues the work and a new `SessionEnd` hook drains the queue once the
+  session ends. Any `lakonai` command run outside a session drains it too, so a
+  machine whose sessions never end cleanly still converges. Install now says
+  "MCP compression queued — applied automatically when the session ends" rather
+  than naming a command to run later.
+
 ## [1.2.5] - 2026-09-09
 
 ### Fixed

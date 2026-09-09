@@ -47,6 +47,17 @@ const HOOKS = [
     event: 'SessionStart',
     matcher: null,
   },
+  {
+    // Drains work that could not be done while the session was live — chiefly
+    // the MCP wrap, which must not rewrite ~/.claude.json under a running
+    // session. Async because SessionEnd hooks share a 1.5s budget and async
+    // ones are not timed out.
+    basename: 'lakon-session-end.js',
+    src: path.join(__dirname, '..', 'hooks', 'session-end.js'),
+    event: 'SessionEnd',
+    matcher: null,
+    async: true,
+  },
 ];
 
 const SUPPORT_FILES = [
@@ -99,6 +110,12 @@ function hookCommand(dest) {
   return dest;
 }
 
+function hookEntry(hookDef, dest) {
+  const entry = { type: 'command', command: hookCommand(dest) };
+  if (hookDef.async) entry.async = true;
+  return entry;
+}
+
 function mergeHook(data, hookDef, dest) {
   /* istanbul ignore next */
   const eventKey = hookDef.event || 'PreToolUse';
@@ -111,12 +128,12 @@ function mergeHook(data, hookDef, dest) {
       if (!entryHasHook(existing, hookDef.basename)) {
         /* istanbul ignore next */
         existing.hooks = existing.hooks || [];
-        existing.hooks.push({ type: 'command', command: hookCommand(dest) });
+        existing.hooks.push(hookEntry(hookDef, dest));
       }
     } else {
       data.hooks[eventKey].push({
         matcher: hookDef.matcher,
-        hooks: [{ type: 'command', command: hookCommand(dest) }],
+        hooks: [hookEntry(hookDef, dest)],
       });
     }
   } else {
@@ -125,10 +142,56 @@ function mergeHook(data, hookDef, dest) {
     );
     if (!existing) {
       data.hooks[eventKey].push({
-        hooks: [{ type: 'command', command: hookCommand(dest) }],
+        hooks: [hookEntry(hookDef, dest)],
       });
     }
   }
+}
+
+// Launchers this version does not ship are leftovers from an older lakonai: the
+// file was removed from the package, but the generated launcher and its
+// settings.json entry stayed behind and now crash on every event they are wired
+// to. `install` owns the `lakon-` namespace, so it prunes them — nothing else
+// will, and the user has no way to know which stale entry is failing.
+function pruneOrphanHooks(home, data) {
+  const dir = path.join(claudeConfigDir(home), 'hooks');
+  const removed = [];
+
+  let entries = [];
+  try { entries = fs.readdirSync(dir); } catch { /* no hooks dir yet */ }
+  for (const f of entries) {
+    if (!f.startsWith('lakon-') || !f.endsWith('.js')) continue;
+    if (ALL_BASENAMES.includes(f)) continue;
+    try { fs.unlinkSync(path.join(dir, f)); removed.push(f); } catch { /* leave it */ }
+  }
+
+  // Drop settings entries pointing at any lakon- launcher we no longer provide,
+  // whether or not its file was still on disk.
+  const isOrphan = (cmd) => {
+    if (typeof cmd !== 'string') return false;
+    const m = cmd.match(/lakon-[\w.-]+\.js/);
+    return Boolean(m) && !ALL_BASENAMES.includes(m[0]);
+  };
+  if (data && data.hooks && typeof data.hooks === 'object') {
+    for (const eventKey of Object.keys(data.hooks)) {
+      if (!Array.isArray(data.hooks[eventKey])) continue;
+      data.hooks[eventKey] = data.hooks[eventKey]
+        .map((entry) => {
+          if (!entry || !Array.isArray(entry.hooks)) return entry;
+          const keep = entry.hooks.filter((h) => {
+            if (!h || !isOrphan(h.command)) return true;
+            const m = h.command.match(/lakon-[\w.-]+\.js/);
+            if (m && !removed.includes(m[0])) removed.push(m[0]);
+            return false;
+          });
+          if (keep.length === 0) return null;
+          return { ...entry, hooks: keep };
+        })
+        .filter(Boolean);
+      if (data.hooks[eventKey].length === 0) delete data.hooks[eventKey];
+    }
+  }
+  return removed;
 }
 
 function installHook(home) {
@@ -162,6 +225,8 @@ function installHook(home) {
     installed.push(dest);
   }
 
+  const pruned = pruneOrphanHooks(home, data);
+
   writeSettings(home, data);
 
   try {
@@ -172,7 +237,7 @@ function installHook(home) {
     // never let marker write break install
   }
 
-  return { hookFile: installed.join(', '), settingsMerged: true };
+  return { hookFile: installed.join(', '), settingsMerged: true, pruned };
 }
 
 function uninstallHook(home) {
@@ -207,4 +272,4 @@ function uninstallHook(home) {
   }
 }
 
-module.exports = { installHook, uninstallHook, hookDest, HOOK_BASENAMES: ALL_BASENAMES };
+module.exports = { installHook, uninstallHook, hookDest, pruneOrphanHooks, HOOK_BASENAMES: ALL_BASENAMES };

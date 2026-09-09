@@ -148,6 +148,15 @@ async function main() {
   };
   process.on('SIGTERM', shutdown);
   process.on('SIGINT', shutdown);
+
+  // Retirement: an upgrade replaces this process, but killing it would drop the
+  // API connections of whatever session is talking to it right now. On SIGUSR2
+  // we stop accepting (freeing the port for the new daemon immediately) and
+  // exit once the last existing connection closes.
+  process.on('SIGUSR2', () => {
+    process.stdout.write('lakonai proxy: retiring — draining open connections\n');
+    server.close(() => process.exit(0));
+  });
 }
 
 /* istanbul ignore next -- process entry point */

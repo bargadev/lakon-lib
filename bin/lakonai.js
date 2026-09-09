@@ -488,8 +488,19 @@ async function runProxy(args) {
     } else {
       process.stdout.write('lakonai proxy: not running\n');
     }
-    process.stdout.write('  Claude talks to the API directly — no compression, nothing broken.\n');
-    process.stdout.write('  Start it with `lakonai proxy start`.\n');
+    // "Nothing broken" is only true for sessions that start from here on. A
+    // session already pointed at the dead port cannot be re-pointed — it is
+    // stuck on ECONNREFUSED — so say so instead of reporting a clean fallback.
+    const stranded = daemon.sessionsOnPort(s.port);
+    if (stranded.length) {
+      const plural = stranded.length > 1 ? 's' : '';
+      process.stdout.write(`  ${stranded.length} Claude session${plural} still pointed at it (pid ${stranded.map((x) => x.pid).join(', ')}) — those are failing with ConnectionRefused.\n`);
+      process.stdout.write('  `lakonai proxy start` rebinds the same port and recovers them.\n');
+      process.stdout.write('  New sessions are unaffected: they talk to the API directly.\n');
+    } else {
+      process.stdout.write('  Claude talks to the API directly — no compression, nothing broken.\n');
+      process.stdout.write('  Start it with `lakonai proxy start`.\n');
+    }
     process.exitCode = 1;
     return;
   }
@@ -518,8 +529,19 @@ async function runProxy(args) {
   process.exitCode = 1;
 }
 
+// Work queued while a Claude Code session was live (chiefly the MCP wrap) is
+// applied here too, not only by the SessionEnd hook — a machine whose sessions
+// never end cleanly would otherwise keep the task forever. Silent and
+// best-effort: it must never delay or break the command the user actually ran.
+/* istanbul ignore next -- opportunistic I/O; drain() itself is tested */
+function drainPendingWork() {
+  if (process.env.CLAUDE_CODE_ENTRYPOINT || process.env.CLAUDE_PID) return;
+  try { require('../src/install/pending').drain(); } catch { /* best-effort */ }
+}
+
 async function main() {
   const argv = process.argv.slice(2);
+  drainPendingWork();
   if (!argv.length || argv[0] === '--help' || argv[0] === '-h') {
     process.stdout.write(HELP);
     return;
