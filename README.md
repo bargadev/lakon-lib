@@ -20,7 +20,7 @@
   <img src="https://img.shields.io/badge/node-%E2%89%A518-0F0F0F" alt="node ≥18" />
   <img src="https://img.shields.io/badge/deps-0-0F0F0F" alt="zero dependencies" />
   <img src="https://img.shields.io/badge/agents-6-0F0F0F" alt="6 AI agents" />
-  <img src="https://img.shields.io/badge/tests-831-0F0F0F" alt="831 tests" />
+  <img src="https://img.shields.io/badge/tests-832-0F0F0F" alt="832 tests" />
 </p>
 
 <p align="center">
@@ -175,8 +175,9 @@ accumulate in `~/.lakon/proxy-stats.json`.
 `ANTHROPIC_BASE_URL` directly — it sources `~/.lakon/proxy-env.sh`, which checks
 that the proxy is actually listening before pointing anything at it. Proxy down
 (reboot, crash, `lakonai proxy stop`) means no compression, and Claude talks to
-the API directly as if lakonai were not installed. A base URL you set yourself is
-never overridden.
+the API directly as if lakonai were not installed. It also clears a dead lakonai
+URL it finds already in the environment, so a shell that inherited one from an
+older install heals itself. A base URL you set yourself is never touched.
 
 Manage it with `lakonai proxy`:
 
@@ -341,7 +342,7 @@ Input is measured and deterministic. Output is estimated by your local AI CLI (n
 
 ## Test suite
 
-831 tests across 54 suites — all passing, no mocks on I/O boundaries.
+832 tests across 54 suites — all passing, no mocks on I/O boundaries.
 
 | Type | Suites | Tests |
 |------|--------|-------|

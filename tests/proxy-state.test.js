@@ -172,10 +172,14 @@ test('envScript: carries the port and only exports behind a liveness check', () 
   const script = s.envScript(41474);
   assert.ok(script.includes('__lakon_port=41474'));
   assert.ok(script.includes('export ANTHROPIC_BASE_URL=http://127.0.0.1:$__lakon_port'));
-  // The export must be conditional — that is the whole point of the file.
-  assert.ok(script.includes('if [ "$__lakon_up" = 1 ]; then'));
+  // The export must be conditional on a live port — that is the whole point.
+  assert.ok(script.includes('if __lakon_probe "$__lakon_port"; then'));
   // And it must respect a base URL the user set for another endpoint.
   assert.ok(script.includes('case "$ANTHROPIC_BASE_URL" in'));
+  // A dead lakonai URL already in the environment must be cleaned up, including
+  // the pre-1.2.3 port.
+  assert.ok(script.includes('unset ANTHROPIC_BASE_URL'));
+  assert.ok(script.includes('http://127.0.0.1:7474'));
   cleanup(home);
 });
 
