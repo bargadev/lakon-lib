@@ -6,6 +6,20 @@ this file (no git tags). Format loosely follows
 
 ## [Unreleased]
 
+## [1.2.5] - 2026-09-09
+
+### Fixed
+- **A shell that already carried a dead `ANTHROPIC_BASE_URL` stayed broken after
+  upgrading.** 1.2.3 stopped lakonai from *setting* a base URL to a proxy that
+  is not listening, but the generated snippet left an existing one alone — and
+  the users hit by the original bug have exactly that: a terminal exporting
+  `http://127.0.0.1:7474` from the old install, inherited by every shell started
+  from it. `~/.lakon/proxy-env.sh` now unsets an inherited
+  `http://127.0.0.1:<current port|7474>` when nothing answers there, so such a
+  shell heals itself instead of failing every `claude` with ECONNREFUSED. A live
+  proxy on that port is kept, and a base URL pointing anywhere else is still
+  never touched.
+
 ## [1.2.4] - 2026-09-09
 
 ### Fixed

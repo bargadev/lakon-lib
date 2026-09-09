@@ -326,3 +326,53 @@ test('start: adopting a current daemon still (re)publishes the env script', asyn
     await cleanup(home, null);
   }
 });
+
+test('the snippet clears a dead lakonai URL inherited from the environment', async () => {
+  const home = freshHome();
+  const { daemon, state } = load(home);
+  const sh = (script, baseUrl) => spawnSync('sh', ['-c', script], {
+    encoding: 'utf8',
+    env: { ...process.env, ANTHROPIC_BASE_URL: baseUrl },
+  }).stdout.trim();
+  try {
+    // Two ports we know nothing serves: the snippet's own, and a stale one.
+    const a = await occupy();
+    const b = await occupy();
+    const ourPort = a.port;
+    const stalePort = b.port;
+    await a.close();
+    await b.close();
+
+    const script = path.join(home, 'env.sh');
+    fs.writeFileSync(script, state.envScript(ourPort));
+    const read = `. ${script}; echo "\${ANTHROPIC_BASE_URL:-NONE}"`;
+
+    // The exact state the reported bug left behind: a shell carrying a base URL
+    // that points at a local proxy nobody is serving. Keeping it means every
+    // `claude` fails with ECONNREFUSED, so it must be dropped.
+    assert.equal(sh(read, `http://127.0.0.1:${ourPort}`), 'NONE');
+    // The pre-1.2.3 port (7474) is matched too, but whether it is dead depends
+    // on the machine — a legacy daemon may still be serving it, and then
+    // keeping the URL is correct. The pattern itself is asserted on the script
+    // text in tests/proxy-state.test.js.
+
+    // Someone else's endpoint is never touched, dead or not.
+    assert.equal(sh(read, 'https://gateway.example'), 'https://gateway.example');
+    assert.equal(sh(read, `http://127.0.0.1:${stalePort}`), `http://127.0.0.1:${stalePort}`,
+      'a local URL that is not a lakonai port is left alone');
+
+    // And a live proxy still wins over an inherited value.
+    const started = await daemon.start();
+    assert.equal(started.running, true);
+    const liveScript = path.join(home, 'live.sh');
+    fs.writeFileSync(liveScript, state.envScript(started.port));
+    assert.equal(
+      sh(`. ${liveScript}; echo "\${ANTHROPIC_BASE_URL:-NONE}"`, `http://127.0.0.1:${stalePort}`),
+      `http://127.0.0.1:${started.port}`
+    );
+    await daemon.stop();
+  } finally {
+    cleanupEnv();
+    await cleanup(home, null);
+  }
+});
