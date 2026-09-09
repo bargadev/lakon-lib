@@ -95,13 +95,15 @@ Concretely, before running `git commit` for a feature:
    files you touched; only then is the commit ready.
 4. Then commit.
 
-## Coverage target: 100%
+## Coverage target: 100% per new file, 80% global gate
 
-The goal is **100% coverage on every new file**. The global Jest threshold is set
-to 100% — a commit that drops below fails CI. `/* istanbul ignore next */` is
-allowed only for: I/O entry points (`main`, `readStdin`), best-effort tracking
-blocks that must never throw, and platform detection branches that can't be
-simulated in the test environment (document the reason inline).
+The goal is **100% coverage on every new file**. The global Jest threshold that
+actually fails CI is **80%** (`coverageThreshold.global` in `jest.config.js`) —
+the 100% figure is the per-file target you write tests to, not the gate.
+`/* istanbul ignore next */` is allowed only for: I/O entry points (`main`,
+`readStdin`), best-effort tracking blocks that must never throw, and platform
+detection branches that can't be simulated in the test environment (document
+the reason inline).
 
 For integration tests that spawn subprocesses (`spawnSync('node', [hook])`):
 coverage instrumentation does not track the child — add a companion in-process
@@ -113,10 +115,11 @@ valuable: integration proves the wire-up, unit proves the logic and drives cover
 ```bash
 npm test                      # run the Jest suite
 npm run test:coverage          # suite + coverage table (text + HTML in ./coverage)
-npm run test:coverage:check    # same; fails if below 100% threshold
+npm run test:coverage:check    # same; fails if below the 80% global threshold
 ```
 
-Coverage thresholds live in `jest.config.js` (`coverageThreshold.global`, 100%).
+Coverage thresholds live in `jest.config.js` (`coverageThreshold.global`, 80% on
+lines/branches/functions/statements).
 The HTML report is written to `coverage/index.html`.
 
 ## Testing conventions
