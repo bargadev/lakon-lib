@@ -20,7 +20,7 @@
   <img src="https://img.shields.io/badge/node-%E2%89%A518-0F0F0F" alt="node ≥18" />
   <img src="https://img.shields.io/badge/deps-0-0F0F0F" alt="zero dependencies" />
   <img src="https://img.shields.io/badge/agents-6-0F0F0F" alt="6 AI agents" />
-  <img src="https://img.shields.io/badge/tests-751-0F0F0F" alt="751 tests" />
+  <img src="https://img.shields.io/badge/tests-796-0F0F0F" alt="796 tests" />
 </p>
 
 <p align="center">
@@ -157,7 +157,7 @@ Benchmark on the lakonai codebase itself (30 queries, 15 literal + 15 semantic):
 
 ### Layer 3 — Proxy compression (Claude Code)
 
-A local HTTP proxy on port 7474 sits between Claude Code and `api.anthropic.com`. It compresses request bodies before they're sent — the model sees fewer tokens, you pay less.
+A local HTTP proxy sits between Claude Code and `api.anthropic.com`. It compresses request bodies before they're sent — the model sees fewer tokens, you pay less.
 
 ```
 build logs    → -99%   (repetitive lines collapsed)
@@ -167,7 +167,34 @@ diffs         →  -4%   (conservative; context preserved)
 source code   →   0%   (covered by graph instead)
 ```
 
-The proxy starts automatically on `lakonai install` and runs silently. No API key exposed. Stats accumulate in `~/.lakon/proxy-stats.json`.
+The proxy starts automatically on `lakonai install` and runs silently on port
+`41474` (it moves to a free port if that one is taken). No API key exposed. Stats
+accumulate in `~/.lakon/proxy-stats.json`.
+
+**It can never break your CLI.** The shell rc does not export
+`ANTHROPIC_BASE_URL` directly — it sources `~/.lakon/proxy-env.sh`, which checks
+that the proxy is actually listening before pointing anything at it. Proxy down
+(reboot, crash, `lakonai proxy stop`) means no compression, and Claude talks to
+the API directly as if lakonai were not installed. A base URL you set yourself is
+never overridden.
+
+Manage it with `lakonai proxy`:
+
+```bash
+lakonai proxy            # status (exit 1 when it is not serving)
+lakonai proxy start      # start it and refresh the shell wiring
+lakonai proxy stop       # stop it and unwire the shell
+lakonai proxy restart
+```
+
+Upgrading migrates an old install by itself: `lakonai upgrade` replaces a daemon
+running a previous version (a running process keeps executing the server code it
+was started with), moves it off port 7474, and rewrites the old
+`export ANTHROPIC_BASE_URL` line in your rc into the guarded one.
+
+`lakonai uninstall` stops the proxy and removes the wiring. Set
+`LAKON_PROXY_DISABLE=1` to keep `lakonai install` from touching your shell at
+all.
 
 ### Layer 4 — Pixel (Claude Code + Codex)
 
@@ -239,6 +266,7 @@ After `lakonai install`, these are available in Claude Code:
 | `lakonai peek [id]` | Read output parked in sandbox (`--grep/--offset/--limit`) |
 | `lakonai gain` | Token savings across all measured fronts |
 | `lakonai inspect <cmd>` | Debug what filter applies to a command |
+| `lakonai proxy [start\|stop\|restart]` | Compression proxy status/lifecycle |
 | `lakonai doctor` | Health check: CLI on PATH, hooks, rule |
 
 Full flags, filters, env vars, internals: **[docs/reference.md](docs/reference.md)**.
@@ -294,7 +322,7 @@ Input is measured and deterministic. Output is estimated by your local AI CLI (n
 
 ## Test suite
 
-751 tests across 48 suites — all passing, no mocks on I/O boundaries.
+796 tests across 51 suites — all passing, no mocks on I/O boundaries.
 
 | Type | Suites | Tests |
 |------|--------|-------|

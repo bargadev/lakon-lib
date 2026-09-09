@@ -6,8 +6,9 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const { compressRequest } = require('./compress');
+const state = require('./state');
 
-const DEFAULT_PORT = 7474;
+const DEFAULT_PORT = state.DEFAULT_PORT;
 const DEFAULT_UPSTREAM = { host: 'api.anthropic.com', port: 443, protocol: 'https' };
 const STATS_FILE = () => path.join(process.env.LAKON_HOME || path.join(os.homedir(), '.lakon'), 'proxy-stats.json');
 
@@ -91,19 +92,65 @@ function createServer(port = DEFAULT_PORT, upstream = DEFAULT_UPSTREAM) {
   return server;
 }
 
-/* istanbul ignore next */
-function main() {
-  const port = Number(process.env.LAKON_PROXY_PORT) || DEFAULT_PORT;
-  const server = createServer(port);
-  server.listen(port, '127.0.0.1', () => {
-    process.stdout.write(`lakonai proxy: listening on http://127.0.0.1:${port}\n`);
-  });
-  server.on('error', (err) => {
-    process.stderr.write(`lakonai proxy error: ${err.message}\n`);
-    process.exit(1);
+// Bind on `port`, falling back to an OS-assigned free port when it is taken.
+// A busy port used to kill the daemon outright (exit 1) — silently, because the
+// installer spawned it with stdio ignored — while the shell rc had already been
+// pointed at that same dead port.
+function bindServer(server, port, { allowFallback = true } = {}) {
+  return new Promise((resolve, reject) => {
+    const onError = (err) => {
+      /* istanbul ignore else -- non-EADDRINUSE bind errors (EACCES) can't be provoked portably */
+      if (err.code === 'EADDRINUSE' && allowFallback) {
+        server.listen(0, '127.0.0.1', () => resolve(server.address().port));
+      } else {
+        reject(err);
+      }
+    };
+    server.once('error', onError);
+    server.listen(port, '127.0.0.1', () => {
+      server.removeListener('error', onError);
+      resolve(server.address().port);
+    });
   });
 }
 
+/* istanbul ignore next -- process entry point: bindServer and the state writes are unit-tested */
+async function main() {
+  const preferred = Number(process.env.LAKON_PROXY_PORT) || DEFAULT_PORT;
+  const allowFallback = process.env.LAKON_PROXY_FALLBACK !== '0';
+  const server = createServer(preferred);
+
+  let port;
+  try {
+    port = await bindServer(server, preferred, { allowFallback });
+  } catch (err) {
+    process.stderr.write(`lakonai proxy error: ${err.message}\n`);
+    process.exit(1);
+    return;
+  }
+
+  // Publish the state only once a socket is really bound — the supervisor and
+  // the shell snippet both key off this.
+  state.writeState({
+    pid: process.pid,
+    port,
+    startedAt: new Date().toISOString(),
+    // Stamped so an upgrade can tell that the daemon in memory is stale code.
+    version: require('../../package.json').version,
+  });
+  state.writeEnvScript(port);
+  process.stdout.write(`lakonai proxy: listening on http://127.0.0.1:${port}\n`);
+
+  const shutdown = () => {
+    state.clearState();
+    state.removeEnvScript();
+    process.exit(0);
+  };
+  process.on('SIGTERM', shutdown);
+  process.on('SIGINT', shutdown);
+}
+
+/* istanbul ignore next -- process entry point */
 if (require.main === module) main();
 
-module.exports = { createServer, readStats, writeStats, mergeStats, DEFAULT_PORT, DEFAULT_UPSTREAM };
+module.exports = { createServer, bindServer, readStats, writeStats, mergeStats, DEFAULT_PORT, DEFAULT_UPSTREAM };

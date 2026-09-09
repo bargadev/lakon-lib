@@ -4,6 +4,7 @@
 module.exports = {
   testEnvironment: 'node',
   testMatch: ['**/tests/**/*.test.js'],
+  setupFiles: ['<rootDir>/tests/setup-env.js'],
   // A leaked handle (fs op, timer, etc.) must fail the run fast, not hang it. A
   // test that hung `mkdirSync` on a Linux CI runner once blocked `npm test`
   // silently for 6h, which is a prerequisite of the publish workflow — the

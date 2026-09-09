@@ -28,8 +28,9 @@ the Anthropic API. Measured with char-based token approximation (~4 chars/token)
 
 - `src/proxy/detect.js` — structural type detection (diff/log/json/code/text/short)
 - `src/proxy/compress/` — per-type compressors
-- `src/proxy/server.js` — HTTP proxy (port 7474), intercepts /v1/messages
-- `src/proxy/daemon.js` — PID management + shell rc injection (ANTHROPIC_BASE_URL)
+- `src/proxy/server.js` — HTTP proxy (port 41474, falls back to a free one), intercepts /v1/messages
+- `src/proxy/state.js` — on-disk state, TCP liveness probe, generated shell snippet
+- `src/proxy/daemon.js` — supervisor (start/stop/restart/status) + guarded shell rc wiring
 - Install wires daemon start + env automatically — zero manual steps
 
 ## Notes
