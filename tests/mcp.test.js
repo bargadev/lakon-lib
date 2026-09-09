@@ -111,14 +111,17 @@ function withHome(fn) {
   }
 }
 
+// wrapMcp/unwrapMcp return { count, skipped, reason } and refuse to write while
+// a Claude Code session is live — these tests force past that guard on purpose;
+// tests/mcp-session-safety.test.js covers the guard itself.
 test('wrapMcp/unwrapMcp edit ~/.claude.json (backed up) and reverse', () => {
   withHome((home) => {
     const cfg = path.join(home, '.claude.json');
     fs.writeFileSync(cfg, JSON.stringify({ mcpServers: { fs: { command: 'npx', args: ['s'] } } }));
-    assert.equal(mcp.wrapMcp(home), 1);
+    assert.equal(mcp.wrapMcp(home, { force: true }).count, 1);
     let data = JSON.parse(fs.readFileSync(cfg, 'utf8'));
     assert.equal(data.mcpServers.fs.command, 'lakonai');
-    assert.equal(mcp.unwrapMcp(home), 1);
+    assert.equal(mcp.unwrapMcp(home, { force: true }).count, 1);
     data = JSON.parse(fs.readFileSync(cfg, 'utf8'));
     assert.equal(data.mcpServers.fs.command, 'npx');
   });
@@ -126,12 +129,14 @@ test('wrapMcp/unwrapMcp edit ~/.claude.json (backed up) and reverse', () => {
 
 test('wrapMcp: no-op when config missing, no servers, or opted out', () => {
   withHome((home) => {
-    assert.equal(mcp.wrapMcp(home), 0); // no ~/.claude.json
+    assert.equal(mcp.wrapMcp(home, { force: true }).count, 0); // no ~/.claude.json
     fs.writeFileSync(path.join(home, '.claude.json'), JSON.stringify({ other: 1 }));
-    assert.equal(mcp.wrapMcp(home), 0); // no mcpServers
+    assert.equal(mcp.wrapMcp(home, { force: true }).count, 0); // no mcpServers
     fs.writeFileSync(path.join(home, '.claude.json'), JSON.stringify({ mcpServers: { x: { command: 'c' } } }));
     process.env.LAKON_NO_MCP = '1';
-    assert.equal(mcp.wrapMcp(home), 0); // opted out
+    const optedOut = mcp.wrapMcp(home, { force: true });
+    assert.equal(optedOut.count, 0); // opted out
+    assert.equal(optedOut.reason, 'LAKON_NO_MCP=1');
     delete process.env.LAKON_NO_MCP;
   });
 });

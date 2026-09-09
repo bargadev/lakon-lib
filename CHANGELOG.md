@@ -6,6 +6,45 @@ this file (no git tags). Format loosely follows
 
 ## [Unreleased]
 
+## [1.2.4] - 2026-09-09
+
+### Fixed
+- **Installing lakonai could cost you your Claude Code session.** `lakonai
+  install` wraps MCP servers by rewriting `~/.claude.json` — the same file where
+  Claude Code keeps per-project session state (`lastSessionId`,
+  `lastSessionFirstPrompt`, `hasTrustDialogAccepted`, `allowedTools`) and which
+  it rewrites on every turn. The wrap was a non-atomic read-modify-write, run
+  unconditionally, and people typically install from inside a running session.
+  Two ways that lost work: anything Claude Code wrote between the read and the
+  write was discarded (orphaning the session, so `claude --resume` no longer
+  found it), and `fs.writeFileSync` truncates before filling, so an interrupted
+  or concurrently-read write left invalid JSON and Claude Code fell back to an
+  empty config. Three guards now:
+  1. **No write while a session is live.** `lakonai install` from inside Claude
+     Code defers the MCP wrap and says so, with the command to run afterwards.
+     Detection: `CLAUDE_CODE_ENTRYPOINT`/`CLAUDE_PID`, or the config having been
+     written in the last 30s by someone other than us (our own writes are
+     fingerprinted, so `mcp wrap` followed by `mcp unwrap` still works).
+  2. **Atomic writes.** `src/install/atomic.js` writes a sibling temp file,
+     fsyncs and renames, so a reader sees the whole old file or the whole new
+     one. Used for `~/.claude.json`, `~/.claude/settings.json` and the rule
+     blocks — every file a running agent may read.
+  3. **State validation.** The bytes are parsed and checked before the rename:
+     if a top-level key, a project, or a session id would change, the write is
+     refused.
+
+### Added
+- **`lakonai mcp [status|wrap|unwrap] [--force]`** — inspect and apply MCP
+  catalog compression on your own terms; `status` reports how many servers are
+  wrapped and whether a live session is holding the wrap back. Previously
+  wrapping only happened as a silent side effect of `lakonai install`, with no
+  way to see it, defer it, or apply it later.
+- `src/install/atomic.js` — `writeFileAtomic`, at 100% coverage.
+
+### Changed
+- `wrapMcp`/`unwrapMcp` return `{ count, skipped, reason }` instead of a bare
+  count, so callers can tell "nothing to do" from "deliberately skipped".
+
 ## [1.2.3] - 2026-09-09
 
 ### Fixed

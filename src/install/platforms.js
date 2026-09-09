@@ -6,6 +6,7 @@ const { backupFile, restoreAllBackups } = require('./backup');
 const { installHook, uninstallHook } = require('./claude-hook');
 const { installCommands, uninstallCommands } = require('./claude-commands');
 const { wrapMcp, unwrapMcp } = require('./mcp');
+const { writeFileAtomic } = require('./atomic');
 const { claudeConfigDir } = require('./paths');
 
 const MARK_BEGIN = '<!-- lakonai:begin -->';
@@ -46,7 +47,7 @@ function upsertBlock(platformId, filePath, rule) {
   const block = wrap(rule);
   const re = new RegExp(`${ANY_BEGIN}[\\s\\S]*?${ANY_END}\\n?`);
   const next = re.test(existing) ? existing.replace(re, block) : (existing ? `${existing.trim()}\n\n${block}` : block);
-  fs.writeFileSync(filePath, next, 'utf8');
+  writeFileAtomic(filePath, next);
   return filePath;
 }
 
@@ -56,7 +57,7 @@ function stripBlock(filePath) {
   const re = new RegExp(`\\n*${ANY_BEGIN}[\\s\\S]*?${ANY_END}\\n?`);
   if (!re.test(existing)) return null;
   const next = existing.replace(re, '').trim();
-  if (next) fs.writeFileSync(filePath, next + '\n', 'utf8');
+  if (next) writeFileAtomic(filePath, next + '\n');
   else fs.unlinkSync(filePath);
   return filePath;
 }
@@ -77,12 +78,18 @@ const PLATFORMS = [
       const rulePath = upsertBlock(id, path.join(claudeConfigDir(home), 'CLAUDE.md'), rule);
       const hookResult = installHook(home);
       const cmds = installCommands(home);
-      wrapMcp(home);
+      const mcp = wrapMcp(home);
       /* istanbul ignore next */
       const suffixHook = hookResult.settingsMerged ? '+ PreToolUse hook' : `(hook: ${hookResult.note})`;
       /* istanbul ignore next */
       const suffixCmds = cmds.length ? `+ ${cmds.length} slash command${cmds.length > 1 ? 's' : ''}` : '';
-      return [rulePath, suffixHook, suffixCmds].filter(Boolean).join(' ');
+      // Never silent: writing ~/.claude.json under a live session can orphan it,
+      // so say that MCP compression was deferred and how to apply it later.
+      /* istanbul ignore next */
+      const suffixMcp = mcp.skipped && mcp.reason && !mcp.reason.startsWith('LAKON_NO_MCP')
+        ? `(MCP compression deferred - ${mcp.reason}; run \`lakonai mcp wrap\` after quitting Claude Code)`
+        : '';
+      return [rulePath, suffixHook, suffixCmds, suffixMcp].filter(Boolean).join(' ');
     },
     uninstall: ({ home }) => {
       uninstallHook(home);
