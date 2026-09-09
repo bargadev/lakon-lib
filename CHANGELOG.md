@@ -6,6 +6,60 @@ this file (no git tags). Format loosely follows
 
 ## [Unreleased]
 
+## [1.2.3] - 2026-09-09
+
+### Fixed
+- **The proxy could break every `claude` run on a fresh install.** `lakonai
+  install` started the compression proxy and wrote
+  `export ANTHROPIC_BASE_URL=http://127.0.0.1:7474` into `~/.zshrc`,
+  `~/.bashrc` and `~/.bash_profile` — unconditionally, and without ever checking
+  that the daemon had come up. `daemon.start()` returned `{running: true}`
+  straight after `spawn()` (stdio ignored, no `error` handler), so a server that
+  died on `EADDRINUSE` left the shell pointing at a dead port. Every later
+  Claude Code request then failed with
+  `Connection refused — a firewall or proxy may be blocking it`, with nothing
+  naming lakonai as the cause. The only way out was `unset ANTHROPIC_BASE_URL`.
+  Now: the supervisor waits for a real TCP connect before reporting success, and
+  the installer wires the shell only if that succeeded.
+- **The shell can no longer be pointed at a dead proxy.** The rc sources
+  `~/.lakon/proxy-env.sh`, which re-checks the port on every shell start (zsh
+  `ztcp` → bash `/dev/tcp` → `nc`) and exports `ANTHROPIC_BASE_URL` only while
+  the proxy answers. A dead proxy costs compression, not the CLI. Old
+  unconditional export lines are migrated away on the next install/start.
+- **Default port moved from 7474 to 41474.** 7474 is Neo4j's HTTP port — a
+  likely collision on a developer machine, and the trigger for the failure
+  above. On `EADDRINUSE` the server now binds an OS-assigned free port instead
+  of exiting.
+- **`ANTHROPIC_BASE_URL` set by the user is respected** — the snippet takes over
+  only when nothing is set, or when what is set is our own local proxy.
+- **`lakonai uninstall` now unwires the proxy.** `daemon.stop()` and
+  `daemon.uninstallEnv()` existed but were dead code: uninstalling left the rc
+  export and a running daemon behind.
+- **`proxy stop` will not signal a PID it cannot prove is ours** (it must serve
+  the port or run `proxy/server.js`) — PIDs get recycled.
+- **`status()` probes the port, not just the PID.** A live-but-not-listening pid
+  now reads as stale instead of healthy.
+
+### Changed
+- **Upgrading now migrates an existing install.** The server stamps the version
+  it is running into `~/.lakon/proxy.json`; `daemon.start()` replaces a daemon
+  whose stamp is not the installed version — including a pre-1.2.3 one, which
+  has no stamp at all. Without this, `lakonai upgrade` adopted the old process:
+  the fixed server never actually ran, and the daemon stayed on port 7474.
+  Adopting a current daemon also (re)writes `~/.lakon/proxy-env.sh`, so the
+  migrated rc line never points at a missing file.
+
+### Added
+- **`lakonai proxy [status|start|stop|restart]`** — inspect and control the
+  compression proxy; `status` exits 1 when it is not serving. Previously the
+  daemon could only be started as a side effect of `lakonai install`, with no
+  way to check or restart it.
+- `LAKON_PROXY_DISABLE=1` skips all proxy wiring in `install`/`uninstall` (and
+  keeps the test suite from spawning daemons or editing real rc files);
+  `LAKON_PROXY_FALLBACK=0` makes a busy port a hard failure instead of a move.
+- `src/proxy/state.js` — shared proxy state, TCP probing, and the generated
+  shell snippet, with 100% coverage.
+
 ## [1.2.2] - 2026-09-02
 
 ### Changed

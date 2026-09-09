@@ -193,3 +193,59 @@ test('Integration: proxy compresses system prompt', (done) => {
     });
   }).catch(done);
 });
+
+// ── bindServer ───────────────────────────────────────────────────────────────
+
+test('bindServer: binds the requested port when it is free', async () => {
+  const { bindServer } = require('../src/proxy/server');
+  const http = require('node:http');
+  const probe = http.createServer(() => {});
+  await new Promise((r) => probe.listen(0, '127.0.0.1', r));
+  const free = probe.address().port;
+  await new Promise((r) => probe.close(r));
+
+  const server = require('../src/proxy/server').createServer(free);
+  const bound = await bindServer(server, free);
+  assert.equal(bound, free);
+  await new Promise((r) => server.close(r));
+});
+
+test('bindServer: falls back to a free port when the requested one is taken', async () => {
+  const { createServer, bindServer } = require('../src/proxy/server');
+  const squatter = require('node:http').createServer(() => {});
+  await new Promise((r) => squatter.listen(0, '127.0.0.1', r));
+  const taken = squatter.address().port;
+
+  const server = createServer(taken);
+  const bound = await bindServer(server, taken);
+  assert.notEqual(bound, taken);
+  assert.ok(bound > 0);
+
+  await new Promise((r) => server.close(r));
+  await new Promise((r) => squatter.close(r));
+});
+
+test('bindServer: rejects instead of falling back when fallback is off', async () => {
+  const { createServer, bindServer } = require('../src/proxy/server');
+  const squatter = require('node:http').createServer(() => {});
+  await new Promise((r) => squatter.listen(0, '127.0.0.1', r));
+  const taken = squatter.address().port;
+
+  const server = createServer(taken);
+  await assert.rejects(() => bindServer(server, taken, { allowFallback: false }), /EADDRINUSE/);
+
+  await new Promise((r) => squatter.close(r));
+});
+
+test('mergeStats: seeds a byType bucket that does not exist yet', () => {
+  const home = freshHome();
+  withHome(home, () => {
+    const existing = { rawTokens: 0, outTokens: 0, requests: 0, byType: {} };
+    mergeStats(existing, { rawTokens: 10, outTokens: 4, byType: { diff: { raw: 10, out: 4, count: 1 } } });
+    mergeStats(existing, { rawTokens: 5, outTokens: 1, byType: { diff: { raw: 5, out: 1, count: 1 } } });
+    assert.equal(existing.requests, 2);
+    assert.deepEqual(existing.byType.diff, { raw: 15, out: 5, count: 2 });
+    mergeStats(existing, { rawTokens: 1, outTokens: 1 }); // no byType at all
+    assert.equal(existing.requests, 3);
+  });
+});

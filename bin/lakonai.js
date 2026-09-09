@@ -49,6 +49,10 @@ Usage:
   lakonai gain               Show token savings - INPUT (shell output, measured)
                              AND OUTPUT (how much terser the model writes; measured
                              weekly via your local AI CLI, no API key)
+  lakonai proxy [cmd]        Compression proxy: status (default) | start | stop
+                             | restart. The proxy shrinks API request bodies;
+                             while it is down lakonai simply stays out of the way
+                             and Claude talks to the API directly.
   lakonai doctor             Per-platform health: CLI on PATH, rule, hooks
   lakonai version            Print the installed lakonai version
   lakonai --help             This help
@@ -423,6 +427,51 @@ function runPixel(args) {
   process.stdout.write(pixel.formatConvert(results));
 }
 
+async function runProxy(args) {
+  const daemon = require('../src/proxy/daemon');
+  const sub = args[0] || 'status';
+
+  if (sub === 'status') {
+    const s = await daemon.status();
+    if (s.running) {
+      process.stdout.write(`lakonai proxy: running (pid ${s.pid}) on http://127.0.0.1:${s.port}\n`);
+      return;
+    }
+    if (s.stale) {
+      process.stdout.write(`lakonai proxy: NOT serving on 127.0.0.1:${s.port} (stale state${s.pid ? `, pid ${s.pid} alive but not listening` : ''})\n`);
+    } else {
+      process.stdout.write('lakonai proxy: not running\n');
+    }
+    process.stdout.write('  Claude talks to the API directly — no compression, nothing broken.\n');
+    process.stdout.write('  Start it with `lakonai proxy start`.\n');
+    process.exitCode = 1;
+    return;
+  }
+
+  if (sub === 'start' || sub === 'restart') {
+    const res = sub === 'restart' ? await daemon.restart() : await daemon.start();
+    if (!res.running) {
+      process.stdout.write(`lakonai proxy: failed to start — ${res.error}\n`);
+      process.exitCode = 1;
+      return;
+    }
+    const verb = res.alreadyRunning ? 'already running' : 'started';
+    process.stdout.write(`lakonai proxy: ${verb} (pid ${res.pid}) on http://127.0.0.1:${res.port}\n`);
+    const touched = daemon.rcFiles().filter((rc) => daemon.installEnv(rc));
+    if (touched.length) process.stdout.write(`  shell wiring refreshed in ${touched.join(', ')}\n`);
+    return;
+  }
+
+  if (sub === 'stop') {
+    const stopped = await daemon.stop();
+    process.stdout.write(stopped ? 'lakonai proxy: stopped\n' : 'lakonai proxy: was not running\n');
+    return;
+  }
+
+  process.stdout.write(`lakonai proxy: unknown subcommand "${sub}" (use status|start|stop|restart)\n`);
+  process.exitCode = 1;
+}
+
 async function main() {
   const argv = process.argv.slice(2);
   if (!argv.length || argv[0] === '--help' || argv[0] === '-h') {
@@ -485,6 +534,10 @@ async function main() {
     await maybeOfferUpdate();
     return;
   }
+  if (first === 'proxy') {
+    await runProxy(rest);
+    return;
+  }
   if (first === 'doctor') {
     const doctor = require('../src/doctor');
     process.stdout.write(doctor.format(doctor.report()));
@@ -519,4 +572,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { runAndFilter, printVersion, main, HELP };
+module.exports = { runAndFilter, printVersion, main, runProxy, HELP };

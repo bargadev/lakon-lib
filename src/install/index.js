@@ -82,12 +82,14 @@ async function install({ only, here = false, upgraded = false } = {}) {
     }
   }
 
-  // Start proxy daemon and wire ANTHROPIC_BASE_URL into shell rc — silently.
-  /* istanbul ignore next -- daemon I/O; tested via proxy-daemon.test.js */
+  // Start the compression proxy, and only touch the shell rc if it really came
+  // up. Wiring ANTHROPIC_BASE_URL to a daemon that failed to bind is what broke
+  // fresh installs with ECONNREFUSED on every later `claude` run.
+  /* istanbul ignore next -- daemon I/O; logic lives in wireProxy, tested directly */
   try {
-    const daemon = require('../proxy/daemon');
-    daemon.start();
-    for (const rc of daemon.rcFiles()) daemon.installEnv(rc);
+    // LAKON_PROXY_DISABLE keeps the test suite (and anyone who wants lakonai
+    // without the proxy) from spawning daemons and editing shell rc files.
+    if (process.env.LAKON_PROXY_DISABLE !== '1') await wireProxy(require('../proxy/daemon'));
   } catch { /* best-effort; never block install */ }
 
   process.stdout.write('\n');
@@ -207,6 +209,20 @@ async function maybeOfferCompress({ cwd, home }) {
   }
 }
 
+// Bring the proxy up and, only on success, point the shell rc at it. Returns
+// what happened so the installer can say so out loud instead of failing silent.
+async function wireProxy(daemon, { write = (t) => process.stdout.write(t) } = {}) {
+  const res = await daemon.start();
+  if (!res.running) {
+    write(`${FAIL} ${padLabel('compression proxy')} ${ARROW} not started (${res.error})\n`);
+    write(`   ${' '.repeat(25)} Shell left untouched — Claude talks to the API directly.\n`);
+    return { started: false, touched: [] };
+  }
+  const touched = daemon.rcFiles().filter((rc) => daemon.installEnv(rc));
+  write(`${OK} ${padLabel('compression proxy')} ${ARROW} listening on 127.0.0.1:${res.port}\n`);
+  return { started: true, port: res.port, touched };
+}
+
 async function uninstall() {
   const home = homedir();
   process.stdout.write('\nlakonai uninstall\n');
@@ -223,6 +239,19 @@ async function uninstall() {
       process.stdout.write(`${FAIL} ${padLabel(p.label)} ${ARROW} ${err.message}\n`);
     }
   }
+  // The proxy wiring lives in the shell rc, not in a platform file — strip it
+  // here too, otherwise uninstalling lakonai leaves ANTHROPIC_BASE_URL behind.
+  /* istanbul ignore next -- daemon I/O; unwire itself is tested in proxy-daemon.test.js */
+  try {
+    if (process.env.LAKON_PROXY_DISABLE === '1') throw new Error('proxy disabled');
+    const { touched, stopped } = await require('../proxy/daemon').unwire();
+    if (touched.length || stopped) {
+      process.stdout.write(`${OK} ${padLabel('compression proxy')} ${ARROW} ${stopped ? 'stopped' : 'not running'}`);
+      if (touched.length) process.stdout.write(`, unwired from ${touched.map(shortenPath).join(', ')}`);
+      process.stdout.write('\n');
+      any = true;
+    }
+  } catch { /* best-effort */ }
   if (!any) process.stdout.write('  (nothing installed)\n');
 }
 
@@ -279,4 +308,4 @@ function listPlatforms() {
   });
 }
 
-module.exports = { install, uninstall, revert, listPlatforms, backupsReport, pickMemoryTarget };
+module.exports = { install, uninstall, revert, listPlatforms, backupsReport, pickMemoryTarget, wireProxy };
