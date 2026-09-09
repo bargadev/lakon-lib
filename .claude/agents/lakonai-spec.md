@@ -168,10 +168,28 @@ guarding the agent's OWN non-shell Read tool stays Claude-only (needs a
 call-rewriting hook).
 
 **Automatic MCP catalog compression.** `src/mcp-shrink.js` compresses MCP
-tool/prompt/resource descriptions offline; `src/install/mcp.js` auto-wraps stdio
-servers in `~/.claude.json` on install (`lakonai __mcp <cmd>`), backed up &
-reversible (opt-out `LAKON_NO_MCP=1`). It's automatic (no command); the `__mcp`
-subcommand is internal. Never touches requests or tool-call results.
+tool/prompt/resource descriptions offline; `src/install/mcp.js` wraps stdio
+servers in `~/.claude.json` (`lakonai __mcp <cmd>`), backed up & reversible
+(opt-out `LAKON_NO_MCP=1`). Driven by `lakonai mcp status|wrap|unwrap [--force]`
+and attempted on install. Never touches requests or tool-call results.
+
+**~/.claude.json is session state — treat every write to it as dangerous.**
+Claude Code keeps `lastSessionId`, `lastSessionFirstPrompt`,
+`hasTrustDialogAccepted` and `allowedTools` per project in that file and rewrites
+it every turn. Until 1.2.3 the installer did a non-atomic read-modify-write on it
+while a session was live, which orphaned sessions (`claude --resume` stopped
+finding them) and could truncate the file outright. The three rules now:
+
+1. `activeSessionReason()` blocks the write when the shell is inside a session
+   (`CLAUDE_CODE_ENTRYPOINT`/`CLAUDE_PID`) or the config was written in the last
+   30s by someone else — our own writes are fingerprinted by mtime in
+   `~/.lakon/mcp-last-write.json` so `wrap` then `unwrap` still works. `--force`
+   overrides.
+2. Every write goes through `src/install/atomic.js` (temp file + fsync +
+   rename). Never `fs.writeFileSync` on a file a live agent reads —
+   `claude-hook.js` (settings.json) and `platforms.js` (rule blocks) use it too.
+3. `preservesState()` vetoes the write if a top-level key, a project, or a
+   session id would change. `applyToConfig` is exported as the seam to test it.
 
 **Manual memory-file compression** (`src/mem-compress.js` + `src/mem-llm.js`).
 Unlike the MCP path, this rewrites *user-authored* memory (CLAUDE.md, notes), so it
@@ -343,11 +361,13 @@ src/proxy/compress/*.js     per-content-type body compressors
 src/proxy/detect.js         classify a text block (diff/json/log/code/text/short)
 src/hooks/*.js              Claude Code hooks
 src/install/*.js            installer (hooks as launchers, /lakonai:gain, MCP auto-wrap)
-src/install/mcp.js          auto-wrap MCP servers in ~/.claude.json (reversible)
+src/install/mcp.js          wrap MCP servers in ~/.claude.json — session guard,
+                            atomic write, state validation (reversible)
+src/install/atomic.js       writeFileAtomic (temp + fsync + rename)
 ```
 
 Visible user commands: `install`, `upgrade`, `uninstall`, `revert`, `shim`,
-`compress-memory`/`revert-memory`, `gain`, `doctor`, `peek`, `proxy`, `version`. (`backups` was
+`compress-memory`/`revert-memory`, `gain`, `doctor`, `peek`, `proxy`, `mcp`, `version`. (`backups` was
 removed; `compress-memory` takes a freeform instruction + `--prune`/`--rewrite`
 validation levels; `upgrade` self-updates via the detected package manager + an
 oh-my-zsh-style `[Y/n]` prompt; `install` offers the shim only when a hook-less

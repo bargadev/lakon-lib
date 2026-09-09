@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const { backupFile } = require('./backup');
 const { claudeConfigDir } = require('./paths');
+const { writeFileAtomic } = require('./atomic');
 
 const HOOKS = [
   {
@@ -74,7 +75,9 @@ function readSettings(home) {
 }
 
 function writeSettings(home, data) {
-  fs.writeFileSync(settingsPath(home), JSON.stringify(data, null, 2) + '\n', 'utf8');
+  // settings.json is read by a running Claude Code; a truncated read would drop
+  // the user's permissions and hooks.
+  writeFileAtomic(settingsPath(home), JSON.stringify(data, null, 2) + '\n');
 }
 
 function entryHasHook(entry, basename) {

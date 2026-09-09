@@ -20,7 +20,7 @@
   <img src="https://img.shields.io/badge/node-%E2%89%A518-0F0F0F" alt="node ≥18" />
   <img src="https://img.shields.io/badge/deps-0-0F0F0F" alt="zero dependencies" />
   <img src="https://img.shields.io/badge/agents-6-0F0F0F" alt="6 AI agents" />
-  <img src="https://img.shields.io/badge/tests-796-0F0F0F" alt="796 tests" />
+  <img src="https://img.shields.io/badge/tests-831-0F0F0F" alt="831 tests" />
 </p>
 
 <p align="center">
@@ -89,7 +89,7 @@ All numbers from live projects using `lakonai@1.1.1`.
 | **Proxy** | Every API request carries raw bloat | Local HTTP proxy compresses request bodies before they reach Anthropic |
 | **Graph** | File reads load entire source files | AST knowledge graph: serves a compact subgraph instead of the raw file (-87%) |
 | **Pixel** | Skill files are verbose markdown | Converts skill bodies to PNG — vision tokens cheaper than text tokens |
-| **Context** | MCP catalogs + memory re-paid every turn | Auto-compresses MCP catalogs; `compress-memory` via local AI CLI |
+| **Context** | MCP catalogs + memory re-paid every turn | Auto-compresses MCP catalogs (`lakonai mcp`); `compress-memory` via local AI CLI |
 
 Auto-learning runs underneath all of this: lakonai detects new heavy commands and enables a safe filter automatically, no config. ([full reference →](docs/reference.md))
 
@@ -187,6 +187,24 @@ lakonai proxy stop       # stop it and unwire the shell
 lakonai proxy restart
 ```
 
+### MCP catalog compression and your Claude Code sessions
+
+Wrapping MCP servers means editing `~/.claude.json` — the same file where Claude
+Code keeps per-project session state (`lastSessionId`, trust dialogs,
+`allowedTools`) and rewrites on every turn. lakonai therefore **never touches it
+while a session is live**: `lakonai install` run from inside Claude Code defers
+the wrap and says so. Apply it afterwards:
+
+```bash
+lakonai mcp             # status: how many servers are wrapped
+lakonai mcp wrap        # wrap them (after quitting Claude Code)
+lakonai mcp unwrap      # undo
+```
+
+Every write to that file is atomic (temp file + rename, never a truncate in
+place) and validated first: if the rewrite would drop a project or change a
+session id, it is refused. `LAKON_NO_MCP=1` opts out of MCP wrapping entirely.
+
 Upgrading migrates an old install by itself: `lakonai upgrade` replaces a daemon
 running a previous version (a running process keeps executing the server code it
 was started with), moves it off port 7474, and rewrites the old
@@ -266,6 +284,7 @@ After `lakonai install`, these are available in Claude Code:
 | `lakonai peek [id]` | Read output parked in sandbox (`--grep/--offset/--limit`) |
 | `lakonai gain` | Token savings across all measured fronts |
 | `lakonai inspect <cmd>` | Debug what filter applies to a command |
+| `lakonai mcp [wrap\|unwrap]` | MCP catalog compression status/lifecycle |
 | `lakonai proxy [start\|stop\|restart]` | Compression proxy status/lifecycle |
 | `lakonai doctor` | Health check: CLI on PATH, hooks, rule |
 
@@ -322,7 +341,7 @@ Input is measured and deterministic. Output is estimated by your local AI CLI (n
 
 ## Test suite
 
-796 tests across 51 suites — all passing, no mocks on I/O boundaries.
+831 tests across 54 suites — all passing, no mocks on I/O boundaries.
 
 | Type | Suites | Tests |
 |------|--------|-------|

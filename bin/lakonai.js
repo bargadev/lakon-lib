@@ -49,6 +49,11 @@ Usage:
   lakonai gain               Show token savings - INPUT (shell output, measured)
                              AND OUTPUT (how much terser the model writes; measured
                              weekly via your local AI CLI, no API key)
+  lakonai mcp [cmd]          MCP catalog compression: status (default) | wrap |
+                             unwrap. Wrapping edits ~/.claude.json, where Claude
+                             Code keeps per-project session state, so it is
+                             skipped while a session is live - run it after
+                             quitting Claude Code (--force overrides).
   lakonai proxy [cmd]        Compression proxy: status (default) | start | stop
                              | restart. The proxy shrinks API request bodies;
                              while it is down lakonai simply stays out of the way
@@ -427,6 +432,47 @@ function runPixel(args) {
   process.stdout.write(pixel.formatConvert(results));
 }
 
+function runMcp(args) {
+  const mcp = require('../src/install/mcp');
+  const { homedir } = require('../src/install/paths');
+  const home = homedir();
+  const sub = args[0] || 'status';
+  const force = args.includes('--force');
+
+  if (sub === 'status') {
+    const st = mcp.statusMcp(home);
+    if (!st.exists) {
+      process.stdout.write(`lakonai mcp: no Claude Code config at ${st.config}\n`);
+      return;
+    }
+    process.stdout.write(`lakonai mcp: ${st.wrapped} wrapped, ${st.unwrapped} not wrapped (${st.config})\n`);
+    if (st.blockedBy) {
+      process.stdout.write(`  wrapping is on hold — ${st.blockedBy}\n`);
+      process.stdout.write('  ~/.claude.json holds your session state; run `lakonai mcp wrap` after quitting Claude Code.\n');
+    }
+    return;
+  }
+
+  if (sub === 'wrap' || sub === 'unwrap') {
+    const res = sub === 'wrap' ? mcp.wrapMcp(home, { force }) : mcp.unwrapMcp(home, { force });
+    if (res.skipped) {
+      process.stdout.write(`lakonai mcp: skipped — ${res.reason}\n`);
+      process.stdout.write('  ~/.claude.json carries your Claude Code sessions; rewriting it now could orphan them.\n');
+      process.stdout.write(`  Quit Claude Code and run \`lakonai mcp ${sub}\` again (or pass --force).\n`);
+      process.exitCode = 1;
+      return;
+    }
+    const verb = sub === 'wrap' ? 'wrapped' : 'unwrapped';
+    process.stdout.write(
+      res.count ? `lakonai mcp: ${verb} ${res.count} server${res.count > 1 ? 's' : ''}\n` : `lakonai mcp: nothing to ${sub}\n`
+    );
+    return;
+  }
+
+  process.stdout.write(`lakonai mcp: unknown subcommand "${sub}" (use status|wrap|unwrap)\n`);
+  process.exitCode = 1;
+}
+
 async function runProxy(args) {
   const daemon = require('../src/proxy/daemon');
   const sub = args[0] || 'status';
@@ -534,6 +580,10 @@ async function main() {
     await maybeOfferUpdate();
     return;
   }
+  if (first === 'mcp') {
+    runMcp(rest);
+    return;
+  }
   if (first === 'proxy') {
     await runProxy(rest);
     return;
@@ -572,4 +622,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { runAndFilter, printVersion, main, runProxy, HELP };
+module.exports = { runAndFilter, printVersion, main, runProxy, runMcp, HELP };
