@@ -54,6 +54,16 @@ async function main() {
     const update = await checkForUpdate();
     if (update) parts.push(formatNotice(update));
 
+    // An upgrade leaves the old daemon running its old code; this is where a
+    // new session notices and replaces it.
+    if (!process.env.LAKON_NO_PROXY_REFRESH) {
+      try {
+        const { refreshStaleDaemon, formatRefreshNotice } = require('../proxy/refresh');
+        const notice = formatRefreshNotice(await refreshStaleDaemon());
+        if (notice) parts.push(notice);
+      } catch { /* best-effort */ }
+    }
+
     try {
       const learnReport = require('../learn-report');
       const summary = learnReport.maybeGetUnseen();

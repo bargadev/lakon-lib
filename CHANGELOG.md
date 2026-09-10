@@ -6,6 +6,30 @@ this file (no git tags). Format loosely follows
 
 ## [Unreleased]
 
+## [1.2.7] - 2026-09-09
+
+### Fixed
+- **An upgrade never reached the running proxy.** `npm i -g lakonai` swaps files
+  on disk and runs no postinstall, and the daemon already running keeps
+  executing the `server.js` it was started with. The result was a new CLI in
+  front of an old proxy: 1.2.6 shipped the port-reclaim fix, and the daemon
+  actually serving every session was still 1.2.5. `start()` already knew how to
+  replace a version-mismatched daemon — nothing called it. The SessionStart hook
+  now does (`src/proxy/refresh.js`), so the first new session after an upgrade
+  retires the stale daemon and puts the code you installed in the path. It acts
+  only on a real mismatch, never starts a proxy that was not already running,
+  never breaks a session when the proxy misbehaves, and is disabled with
+  `LAKON_NO_PROXY_REFRESH=1`.
+- **Replacing a stale daemon moved the port and stranded live sessions.** The
+  same defect 1.2.6 fixed for a *dead* daemon was still present on the
+  retire-and-replace path: it calls `clearState()` and then recurses into
+  `start()`, which re-read the port from the state that had just been cleared
+  and fell back to `DEFAULT_PORT`. Any daemon not already on the default moved,
+  and every session pinned to the old port — `ANTHROPIC_BASE_URL` is read once,
+  at launch, and held for life — was left on ECONNREFUSED. The port is now
+  carried across the clear explicitly.
+
+
 ## [1.2.6] - 2026-09-09
 
 ### Fixed
