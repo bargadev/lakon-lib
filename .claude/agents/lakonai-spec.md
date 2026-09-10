@@ -243,7 +243,8 @@ reason it is not a SessionStart auto-rewrite.
   logs an invented 150-token saving into `gain`. PreToolUse cannot know the output
   size (it does not exist yet) — either move the measurement to PostToolUse or stop
   logging there.
-- `session-start.js` — update notice. `stop-hook.js` — records session usage AND
+- `session-start.js` — update notice, plus the stale-daemon refresh described in
+  *Proxy lifecycle* rule 4. `stop-hook.js` — records session usage AND
   runs the learner. `throttle.js` — rate-limits notices.
 - `session-end.js` — **SessionEnd**; drains the deferred-work queue
   (`src/install/pending.js`). Registered with `async: true` because SessionEnd
@@ -278,7 +279,12 @@ back on a different port.
    `preferredPort()` *before* `clearState()`. Reversing those two lines sends the
    replacement to `DEFAULT_PORT` (41474) and strands every session pinned to the
    old port on ECONNREFUSED for the rest of its life. There is a regression test
-   for exactly this ordering (`tests/proxy-lifecycle.test.js`).
+   for exactly this ordering (`tests/proxy-lifecycle.test.js`). The
+   retire-and-replace path had the same hole for longer: it calls `clearState()`
+   and then recurses into `start()`, so the recursion found no state and fell
+   back to `DEFAULT_PORT`. It now passes the port forward explicitly
+   (`start({ allowRestart: false, port: held })`), covered by
+   `tests/proxy-refresh.test.js`.
 3. **Replace a daemon by retiring it, never by killing it.** An upgrade run from
    inside a Claude Code session would otherwise drop that session's own
    connection. `retire()` sends SIGUSR2 to a daemon new enough to understand it
@@ -286,6 +292,17 @@ back on a different port.
    disposition for SIGUSR2 is terminate). A daemon too old to retire is left
    running if anything is still connected, recorded in `proxy-retired.json`, and
    reaped by `reapRetired()` on a later start once it is idle.
+
+4. **An upgrade does not restart anything by itself.** `npm i -g lakonai` swaps
+   files and runs no postinstall, while the daemon in memory keeps executing the
+   `server.js` it launched with — new CLI, old proxy, and the fix the user just
+   installed never reaches their sessions. `start()` has always known how to
+   replace a version-mismatched daemon; what was missing was a caller. That is
+   `src/proxy/refresh.js` (`refreshStaleDaemon`), run from the SessionStart hook:
+   the one moment a new session is about to depend on the proxy. It acts only on
+   a mismatch (an unstamped daemon counts as one, matching `start()`), never
+   starts a proxy that was not already running, never throws into the session,
+   and is switched off with `LAKON_NO_PROXY_REFRESH=1`.
 
 `sessionsOnPort(port)` reads other processes' `ANTHROPIC_BASE_URL` (via
 `/proc/<pid>/environ` on Linux, `ps eww` on macOS) to find sessions holding a
@@ -403,6 +420,7 @@ src/proxy/daemon.js         supervisor: start/stop/restart/status/unwire + rc wi
                             sessionsOnPort(): who holds a given local port
 src/install/pending.js      deferred-work queue (drained on SessionEnd)
 src/hooks/session-end.js    SessionEnd hook: drains that queue
+src/proxy/refresh.js        replaces a daemon left stale by an upgrade (SessionStart)
 src/proxy/compress/*.js     per-content-type body compressors
 src/proxy/detect.js         classify a text block (diff/json/log/code/text/short)
 src/hooks/*.js              Claude Code hooks

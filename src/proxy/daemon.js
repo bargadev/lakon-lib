@@ -166,7 +166,7 @@ function reapRetired() {
 // Start the daemon and wait until it actually serves. Returns
 // `{running: false, error}` when it does not — callers must check before
 // touching the user's shell rc.
-async function start({ allowRestart = true } = {}) {
+async function start({ allowRestart = true, port: forcedPort = null } = {}) {
   reapRetired();
   const current = await status();
   if (current.running) {
@@ -177,8 +177,13 @@ async function start({ allowRestart = true } = {}) {
       // Retire, do not kill: an upgrade run from inside a Claude Code session
       // would otherwise drop that session's own connection to the proxy.
       const how = await retire({ pid: current.pid, port: current.port, version: current.version });
+      const held = current.port;
       clearState();
-      const next = await start({ allowRestart: false });
+      // Carry the port across the clear. Sessions already running have that
+      // port baked into ANTHROPIC_BASE_URL for life, so the replacement has to
+      // land on it; re-reading preferredPort() here would find the state we
+      // just cleared and fall back to DEFAULT_PORT, stranding every one of them.
+      const next = await start({ allowRestart: false, port: held });
       return { ...next, replaced: how };
     }
     // The env script is what the shell actually reads; an upgrade that adopts a
@@ -192,7 +197,7 @@ async function start({ allowRestart = true } = {}) {
   // cannot be told to look elsewhere. Rebinding the same port is the only thing
   // that brings those sessions back; clearing first would send us to the
   // default and strand every one of them on ECONNREFUSED.
-  const port = preferredPort();
+  const port = forcedPort || preferredPort();
   clearState(); // drop stale pid/port so we don't read the dead daemon's values
   const child = spawn(process.execPath, [serverScript], {
     detached: true,
